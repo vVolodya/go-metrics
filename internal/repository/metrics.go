@@ -1,13 +1,14 @@
 package repository
 
-import "sync"
+import (
+	"sync"
+)
 
 type MetricsStorage interface {
 	UpdateGauge(name string, v float64)
 	AddCounter(name string, delta int64) int64
 	GetGauge(name string) (float64, bool)
 	GetCounter(name string) (int64, bool)
-	//Snapshot() (map[string]float64, map[string]int64)
 }
 
 type MemStorage struct {
@@ -53,6 +54,24 @@ func (m *MemStorage) GetCounter(name string) (int64, bool) {
 	m.rwMutex.RUnlock()
 
 	return v, exists
+}
+
+func (m *MemStorage) Snapshot() (gauges map[string]float64, counters map[string]int64) {
+	m.rwMutex.RLock()
+	defer m.rwMutex.RUnlock()
+
+	g := make(map[string]float64, len(m.gauge))
+	c := make(map[string]int64, len(m.counter))
+
+	for k, v := range m.gauge {
+		g[k] = v
+	}
+
+	for k, v := range m.counter {
+		c[k] = v
+	}
+
+	return g, c
 }
 
 // Контракт на реализацию
