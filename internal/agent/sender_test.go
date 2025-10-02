@@ -180,7 +180,7 @@ func TestHTTPSender_sendMetric_RequestTimeout(t *testing.T) {
 
 	s := NewHTTPSender(fakeStore2{}, ts.URL)
 	// Уменьшим таймаут клиента специально под тест
-	s.client.Timeout = 50 * time.Millisecond
+	s.Client.Timeout = 50 * time.Millisecond
 
 	err := s.sendMetric(context.Background(), model.Gauge, "Alloc", "1")
 	if err == nil {

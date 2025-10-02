@@ -20,14 +20,14 @@ type Sender interface {
 type HTTPSender struct {
 	store   LocalStorage
 	baseURL string
-	client  *http.Client
+	Client  *http.Client
 }
 
 func NewHTTPSender(store LocalStorage, baseURL string) *HTTPSender {
 	return &HTTPSender{
 		store:   store,
 		baseURL: strings.TrimRight(baseURL, "/"),
-		client:  &http.Client{Timeout: 5 * time.Second},
+		Client:  &http.Client{Timeout: 5 * time.Second},
 	}
 }
 
@@ -47,7 +47,7 @@ func (s *HTTPSender) sendMetric(ctx context.Context, mType, name, value string) 
 	}
 	req.Header.Set("Content-Type", "text/plain")
 
-	resp, err := s.client.Do(req)
+	resp, err := s.Client.Do(req)
 	if err != nil {
 		return err
 	}

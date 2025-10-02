@@ -13,15 +13,15 @@ type RuntimeStatsProvider interface {
 	ReadMemStats(ms *runtime.MemStats)
 }
 
-type stdRuntime struct{}
+type StdRuntime struct{}
+
+func (StdRuntime) ReadMemStats(ms *runtime.MemStats) { runtime.ReadMemStats(ms) }
 
 type RuntimeCollector struct {
 	store LocalStorage
 	rt    RuntimeStatsProvider
 	rng   *rand.Rand
 }
-
-func (stdRuntime) ReadMemStats(ms *runtime.MemStats) { runtime.ReadMemStats(ms) }
 
 func NewRuntimeCollector(store LocalStorage, rt RuntimeStatsProvider, rng *rand.Rand) *RuntimeCollector {
 	if store == nil || rt == nil || rng == nil {
