@@ -9,23 +9,36 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
+
 	"github.com/vvolodya/go-metrics/internal/handler"
 	"github.com/vvolodya/go-metrics/internal/repository"
 )
 
-func main() {
-	store := repository.NewMemStorage()
-	h := handler.NewHandler(store)
+func NewRouter(h *handler.Handler) http.Handler {
+	r := chi.NewRouter()
+	r.Use(middleware.RequestID, middleware.RealIP, middleware.Recoverer)
 
-	mux := http.NewServeMux()
-	mux.Handle(`/`, h)
+	r.Get("/", h.HandleIndex)
+	r.Get("/value/{type}/{metric}", h.HandleMetric)
+	r.Post("/update/{type}/{metric}/{value}", h.HandlePostMetrics)
+
+	return r
+}
+
+func main() {
+	s := repository.NewMemStorage()
+	h := handler.NewHandler(s)
+	r := NewRouter(h)
 
 	srv := &http.Server{
-		Addr:         ":8080",
-		Handler:      mux,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Addr:              ":8080",
+		Handler:           r,
+		ReadTimeout:       10 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	stop := make(chan os.Signal, 1)

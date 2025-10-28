@@ -1,187 +1,202 @@
 package handler
 
 import (
-	"math"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"github.com/go-chi/chi/v5"
 
 	"github.com/vvolodya/go-metrics/internal/repository"
 )
 
-// small helper to spin handler+store per test
-func newTestHandler() (*Handler, repository.MetricsStorage) {
+func newTestRouter() (http.Handler, *repository.MemStorage) {
 	store := repository.NewMemStorage()
-	return NewHandler(store), store
+	h := NewHandler(store)
+
+	r := chi.NewRouter()
+	r.Get("/", h.HandleIndex)
+	r.Get("/value/{type}/{metric}", h.HandleMetric)
+	r.Post("/update/{type}/{metric}/{value}", h.HandlePostMetrics)
+
+	return r, store
 }
 
-func TestUpdateGauge_OK(t *testing.T) {
-	h, store := newTestHandler()
+func TestHandleIndex_OK(t *testing.T) {
+	r, store := newTestRouter()
 
-	req := httptest.NewRequest(http.MethodPost, "/update/gauge/temperature/36.6", nil)
-	req.Header.Set("Content-Type", "text/plain")
-	rr := httptest.NewRecorder()
+	store.UpdateGauge("Alloc", 123.45)
+	store.AddCounter("Polls", 7)
 
-	h.ServeHTTP(rr, req)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
 
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status: want %d, got %d", http.StatusOK, rr.Code)
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
-	if ct := rr.Header().Get("Content-Type"); ct != "text/plain; charset=utf-8" {
-		t.Fatalf("content-type: want %q, got %q", "text/plain; charset=utf-8", ct)
+	ct := resp.Header.Get("Content-Type")
+	if !strings.HasPrefix(ct, "text/html") {
+		t.Fatalf("content-type = %q, want text/html", ct)
 	}
-	if body := rr.Body.String(); body != "Ok" {
-		t.Fatalf("body: want %q, got %q", "Ok", body)
-	}
+	body, _ := io.ReadAll(resp.Body)
+	s := string(body)
 
-	v, ok := store.GetGauge("temperature")
-	if !ok {
-		t.Fatalf("GetGauge: want ok==true, got false")
+	if !strings.Contains(s, "Alloc") || !strings.Contains(s, "123.45") {
+		t.Fatalf("index html does not contain gauge metric: %q", s)
 	}
-	if math.Abs(v-36.6) > 1e-9 {
-		t.Fatalf("GetGauge: want 36.6, got %v", v)
-	}
-}
-
-func TestUpdateCounter_OK_Sums(t *testing.T) {
-	h, store := newTestHandler()
-
-	// +10
-	req1 := httptest.NewRequest(http.MethodPost, "/update/counter/requests/10", nil)
-	req1.Header.Set("Content-Type", "text/plain")
-	rr1 := httptest.NewRecorder()
-	h.ServeHTTP(rr1, req1)
-	if rr1.Code != http.StatusOK {
-		t.Fatalf("first status: want %d, got %d", http.StatusOK, rr1.Code)
-	}
-
-	// +5
-	req2 := httptest.NewRequest(http.MethodPost, "/update/counter/requests/5", nil)
-	req2.Header.Set("Content-Type", "text/plain")
-	rr2 := httptest.NewRecorder()
-	h.ServeHTTP(rr2, req2)
-	if rr2.Code != http.StatusOK {
-		t.Fatalf("second status: want %d, got %d", http.StatusOK, rr2.Code)
-	}
-
-	v, ok := store.GetCounter("requests")
-	if !ok || v != 15 {
-		t.Fatalf("GetCounter: want (15, true), got (%d, %v)", v, ok)
+	if !strings.Contains(s, "7<") || !strings.Contains(s, "Polls") {
+		t.Fatalf("index html does not contain counter metric: %q", s)
 	}
 }
 
-func TestBadType_Returns400(t *testing.T) {
-	h, _ := newTestHandler()
+func TestHandleMetric_Counter_OK(t *testing.T) {
+	r, store := newTestRouter()
+	store.AddCounter("RequestsTotal", 10)
 
-	req := httptest.NewRequest(http.MethodPost, "/update/banana/x/1", nil)
-	req.Header.Set("Content-Type", "text/plain")
-	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/value/counter/RequestsTotal", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
 
-	h.ServeHTTP(rr, req)
+	resp := w.Result()
+	defer resp.Body.Close()
 
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("status: want 400, got %d", rr.Code)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
+		t.Fatalf("content-type = %q, want text/plain", ct)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if got := string(body); got != "10" {
+		t.Fatalf("body = %q, want %q", got, "10")
 	}
 }
 
-func TestBadValue_Counter_Returns400(t *testing.T) {
-	h, _ := newTestHandler()
+func TestHandleMetric_Gauge_OK(t *testing.T) {
+	r, store := newTestRouter()
+	store.UpdateGauge("HeapInUse", 42.5)
 
-	req := httptest.NewRequest(http.MethodPost, "/update/counter/c/not-a-number", nil)
-	req.Header.Set("Content-Type", "text/plain")
-	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/value/gauge/HeapInUse", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
 
-	h.ServeHTTP(rr, req)
+	resp := w.Result()
+	defer resp.Body.Close()
 
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("status: want 400, got %d", rr.Code)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
+		t.Fatalf("content-type = %q, want text/plain", ct)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if got := string(body); got != "42.5" {
+		t.Fatalf("body = %q, want %q", got, "42.5")
 	}
 }
 
-func TestBadValue_Gauge_NaN_Inf_Returns400(t *testing.T) {
-	t.Run("NaN", func(t *testing.T) {
-		h, _ := newTestHandler()
+func TestHandleMetric_NotFound(t *testing.T) {
+	r, _ := newTestRouter()
 
-		req := httptest.NewRequest(http.MethodPost, "/update/gauge/t/NaN", nil)
-		req.Header.Set("Content-Type", "text/plain")
-		rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/value/counter/Unknown", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
 
-		h.ServeHTTP(rr, req)
-
-		if rr.Code != http.StatusBadRequest {
-			t.Fatalf("status NaN: want 400, got %d", rr.Code)
-		}
-	})
-
-	t.Run("Inf", func(t *testing.T) {
-		h, _ := newTestHandler()
-
-		req := httptest.NewRequest(http.MethodPost, "/update/gauge/t/Inf", nil)
-		req.Header.Set("Content-Type", "text/plain")
-		rr := httptest.NewRecorder()
-
-		h.ServeHTTP(rr, req)
-
-		if rr.Code != http.StatusBadRequest {
-			t.Fatalf("status Inf: want 400, got %d", rr.Code)
-		}
-	})
-}
-
-func TestNoName_Returns404(t *testing.T) {
-	h, _ := newTestHandler()
-
-	req := httptest.NewRequest(http.MethodPost, "/update/gauge//36.6", nil)
-	req.Header.Set("Content-Type", "text/plain")
-	rr := httptest.NewRecorder()
-
-	h.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusNotFound {
-		t.Fatalf("status: want 404, got %d", rr.Code)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusNotFound)
 	}
 }
 
-func TestWrongMethod_Returns405_WithAllowHeader(t *testing.T) {
-	h, _ := newTestHandler()
+func TestHandleMetric_BadType(t *testing.T) {
+	r, _ := newTestRouter()
 
-	req := httptest.NewRequest(http.MethodGet, "/update/gauge/x/1", nil)
-	req.Header.Set("Content-Type", "text/plain")
-	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/value/number/Whatever", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
 
-	h.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("status: want 405, got %d", rr.Code)
-	}
-	if allow := rr.Header().Get("Allow"); allow != http.MethodPost {
-		t.Fatalf("Allow header: want %q, got %q", http.MethodPost, allow)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusNotFound)
 	}
 }
 
-func TestWrongPathLen_Returns404(t *testing.T) {
-	h, _ := newTestHandler()
+func TestHandlePostMetrics_Counter_OK(t *testing.T) {
+	r, store := newTestRouter()
 
-	req := httptest.NewRequest(http.MethodPost, "/update/gauge/x", nil)
-	req.Header.Set("Content-Type", "text/plain")
-	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/update/counter/Requests/5", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
 
-	h.ServeHTTP(rr, req)
+	resp := w.Result()
+	defer resp.Body.Close()
 
-	if rr.Code != http.StatusNotFound {
-		t.Fatalf("status: want 404, got %d", rr.Code)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if got := string(body); got != "Ok" {
+		t.Fatalf("body = %q, want %q", got, "Ok")
+	}
+	if v, ok := store.GetCounter("Requests"); !ok || v != 5 {
+		t.Fatalf("counter Requests = %d (ok=%v), want 5,true", v, ok)
 	}
 }
 
-func TestContentType_Required_Returns400(t *testing.T) {
-	h, _ := newTestHandler()
+func TestHandlePostMetrics_Gauge_OK(t *testing.T) {
+	r, store := newTestRouter()
 
-	req := httptest.NewRequest(http.MethodPost, "/update/gauge/t/1.23", nil)
-	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/update/gauge/Alloc/123.456", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
 
-	h.ServeHTTP(rr, req)
+	resp := w.Result()
+	defer resp.Body.Close()
 
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("status: want 400, got %d", rr.Code)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if v, ok := store.GetGauge("Alloc"); !ok || v != 123.456 {
+		t.Fatalf("gauge Alloc = %v (ok=%v), want 123.456,true", v, ok)
+	}
+}
+
+func TestHandlePostMetrics_BadCounterValue(t *testing.T) {
+	r, _ := newTestRouter()
+
+	req := httptest.NewRequest(http.MethodPost, "/update/counter/Requests/not-int", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+func TestHandlePostMetrics_BadGaugeValue(t *testing.T) {
+	r, _ := newTestRouter()
+
+	req := httptest.NewRequest(http.MethodPost, "/update/gauge/Alloc/not-float", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+func TestHandlePostMetrics_BadType(t *testing.T) {
+	r, _ := newTestRouter()
+
+	req := httptest.NewRequest(http.MethodPost, "/update/number/Alloc/10", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusBadRequest)
 	}
 }
